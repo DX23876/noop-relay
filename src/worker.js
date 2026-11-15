@@ -14,8 +14,9 @@ const MAX_SUGGESTION = 500;
 // (`RawDonationPlan.approximateBytes` in the app's core). 1 MiB leaves room for a longer plan or
 // a header without leaving room for someone else's video.
 const MAX_DONATION_BYTES = 1024 * 1024;
-// Bytes ever written to the bucket, over the life of the service. R2's free allowance is 10 GB.
-const DEFAULT_RAW_BUDGET_BYTES = 4 * 1024 * 1024 * 1024;
+// Bytes ever written to the bucket, over the life of the service. R2 gives away 10 GB (decimal), so
+// 8 GiB is 8.59 GB of it and the remainder is deliberate margin, not caution about the allowance.
+const DEFAULT_RAW_BUDGET_BYTES = 8 * 1024 * 1024 * 1024;
 const DONATION_TTL_MS = 10 * 60 * 1000;
 const DONATION_SPORTS = /^[a-z0-9_]{2,40}$/;
 const MAX_ID = 40;

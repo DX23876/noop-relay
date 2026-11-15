@@ -31,7 +31,8 @@ repository are:
   of i16 at 100 Hz.
 - **The size is measured, not believed.** The upload is read with a bound and refused past it, so a
   chunked body that declares no length cannot turn into an object of any size it likes.
-- **`RAW_BUDGET_BYTES` caps the bytes ever written**, 4 GiB by default, counted in D1. Reaching it stops
+- **`RAW_BUDGET_BYTES` caps the bytes ever written**, 8 GiB by default (8.59 GB of the free 10 GB,
+  about 19,900 full recordings), counted in D1. Reaching it stops
   donations until the number is raised; it is not a monthly figure, because objects live 24 months and a
   figure that resets every month would bound nothing. A counter that cannot be read refuses the upload.
 

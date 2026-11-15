@@ -16,9 +16,10 @@ database_id = "74300238-26bc-4f1d-a16b-aad35750df7f"
 SUGGESTION_REPO = "DX23876/noop-suggestions"
 
 # The cap on donated bytes, ever, in bytes. Nothing in Cloudflare stops R2 spending, so this is what
-# does: when it is reached the service refuses donations until this number is raised. 4 GiB of R2's
-# 10 GB free allowance is about 9,900 full recordings at 432 KB each.
-RAW_BUDGET_BYTES = "4294967296"
+# does: when it is reached the service refuses donations until this number is raised. R2 gives away
+# 10 GB (decimal); 8 GiB is 8.59 GB of that, about 19,900 full recordings at 432 KB each, and the rest
+# is the margin that keeps an overshoot inside the free tier rather than one cent past it.
+RAW_BUDGET_BYTES = "8589934592"
 
 # Donated raw-motion recordings. Private bucket, and a lifecycle rule deletes objects after 24 months,
 # which is the figure the app's explainer page states.
