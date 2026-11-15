@@ -27,6 +27,10 @@ SUGGESTION_REPO = "DX23876/noop-suggestions"
 # is the margin that keeps an overshoot inside the free tier rather than one cent past it.
 RAW_BUDGET_BYTES = "8589934592"
 
+# The same hard stop for the logs attached to bug reports, counted on its own line so a bad week of
+# reports cannot eat the donations' allowance, nor the other way round. 2 GiB at 4 MiB a report.
+LOG_BUDGET_BYTES = "2147483648"
+
 # Donated raw-motion recordings. Private bucket, and a lifecycle rule deletes objects after 24 months,
 # which is the figure the app's explainer page states.
 [[r2_buckets]]

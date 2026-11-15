@@ -17,9 +17,12 @@ function makeDB() {
   const votes = new Map();      // `${item}\u0000${key}` -> at
   const calls = new Map();      // `${key}\u0000${hour}` -> n
   const donations = new Map();  // token -> row
-  const budget = { bytes: 0 };  // bytes ever written, the cost cap's counter
+  const budget = { bytes: 0 };     // donated bytes ever written, the cost cap's counter
+  const logBudget = { bytes: 0 };  // report-log bytes, counted apart on purpose
+  const reports = new Map();       // code -> row
+  const uploads = new Map();       // token -> row
   return {
-    votes, calls, donations, budget,
+    votes, calls, donations, budget, logBudget, reports, uploads,
     prepare(sql) {
       let bound = [];
       const api = {
@@ -41,6 +44,20 @@ function makeDB() {
             donations.delete(bound[0]);
           } else if (sql.startsWith("UPDATE budget")) {
             budget.bytes = Math.max(budget.bytes - bound[0], 0);
+          } else if (sql.startsWith("UPDATE log_budget")) {
+            logBudget.bytes = Math.max(logBudget.bytes - bound[0], 0);
+          } else if (sql.startsWith("INSERT INTO reports")) {
+            const [code, number, lang, at] = bound;
+            reports.set(code, { code, number, lang, at });
+          } else if (sql.startsWith("DELETE FROM reports")) {
+            reports.delete(bound[0]);
+          } else if (sql.startsWith("INSERT INTO report_uploads")) {
+            const [token, code, bytes, at] = bound;
+            uploads.set(token, { token, code, bytes, at });
+          } else if (sql.startsWith("DELETE FROM report_uploads")) {
+            for (const [token, row] of [...uploads]) {
+              if (row.code === bound[0] || token === bound[0]) uploads.delete(token);
+            }
           }
           return { success: true };
         },
@@ -59,6 +76,13 @@ function makeDB() {
             budget.bytes += bound[0];
             return { bytes: budget.bytes };
           }
+          if (sql.startsWith("INSERT INTO log_budget")) {
+            logBudget.bytes += bound[0];
+            return { bytes: logBudget.bytes };
+          }
+          if (sql.startsWith("SELECT * FROM reports")) return reports.get(bound[0]) ?? null;
+          if (sql.startsWith("SELECT number FROM reports")) return reports.get(bound[0]) ?? null;
+          if (sql.startsWith("SELECT * FROM report_uploads")) return uploads.get(bound[0]) ?? null;
           return null;
         },
         async all() {
@@ -79,7 +103,17 @@ function makeEnv(overrides = {}) {
   const puts = [];
   return {
     DB: makeDB(),
-    RAW: { puts, async put(key, body, opts) { puts.push({ key, body, opts }); } },
+    RAW: {
+      puts,
+      async put(key, body, opts) { puts.push({ key, body, opts }); },
+      async list({ prefix }) {
+        return { objects: puts.filter((p) => p.key.startsWith(prefix)).map((p) => ({ key: p.key })) };
+      },
+      async delete(key) {
+        const at = puts.findIndex((p) => p.key === key);
+        if (at >= 0) puts.splice(at, 1);
+      },
+    },
     SUGGESTION_REPO: "owner/private",
     GITHUB_TOKEN: "test-token",
     ...overrides,
@@ -297,6 +331,148 @@ test("a nonsense announcement is refused", async () => {
     assert.equal(response.status, 400, JSON.stringify(body));
   }
   assert.equal(env.DB.donations.size, 0);
+});
+
+// GitHub, answering the four calls the report routes make. `issue` is what the thread route will read.
+function captureGitHub({ issue = {}, comments = [] } = {}) {
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    const target = String(url);
+    seen.push({ url: target, init });
+    const method = (init?.method || "GET").toUpperCase();
+    if (method === "POST" && target.endsWith("/issues")) {
+      return new Response(JSON.stringify({ number: 7 }), { status: 201 });
+    }
+    if (method === "GET" && /\/issues\/\d+\/comments/.test(target)) {
+      return new Response(JSON.stringify(comments), { status: 200 });
+    }
+    if (method === "GET" && /\/issues\/\d+$/.test(target)) {
+      return new Response(JSON.stringify({ state: "open", labels: [], body: "", ...issue }),
+                          { status: 200 });
+    }
+    return new Response("{}", { status: 201 });
+  };
+  return seen;
+}
+
+const CODE = /^[2-9A-HJ-NP-Z]{4}(-[2-9A-HJ-NP-Z]{4}){3}$/;
+
+test("a report reaches the private repository and comes back with a code", async () => {
+  const seen = captureGitHub();
+  const env = makeEnv();
+  const response = await worker.fetch(
+    post("/v1/report", { text: "The strap stops sharing after a reconnect", key: KEY, lang: "de" }), env);
+  assert.equal(response.status, 200);
+  const { code } = await response.json();
+  assert.match(code, CODE, "the code is what the reporter types back later");
+
+  const sent = JSON.parse(seen[0].init.body);
+  assert.deepEqual(sent.labels, ["bug", "from-app"], "never the suggestion labels");
+  assert.match(sent.body, new RegExp(`Code: ${code}`), "the owner can find the thread from the issue");
+  assert.equal(env.DB.reports.get(code).number, 7);
+});
+
+test("a report sent without a thread leaves nothing behind", async () => {
+  const seen = captureGitHub();
+  const env = makeEnv();
+  const response = await worker.fetch(
+    post("/v1/report", { text: "No way back wanted", key: KEY, thread: false }), env);
+  assert.deepEqual(await response.json(), { ok: true }, "no code is handed out");
+  assert.equal(env.DB.reports.size, 0, "and nothing is stored that could tie this to a device");
+  assert.match(JSON.parse(seen[0].init.body).body, /without a thread/);
+});
+
+test("the thread shows both voices apart, and a wrong code says nothing", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  const { code } = await (await worker.fetch(
+    post("/v1/report", { text: "Live heart rate stops", key: KEY }), env)).json();
+
+  captureGitHub({
+    issue: { state: "open", labels: [{ name: "bug" }, { name: "in-progress" }], body: "Public: #123" },
+    comments: [{ body: "Which firmware is on the strap?", created_at: "2026-11-15T10:00:00Z" },
+               { body: "<!--app-->\n17.1.3", created_at: "2026-11-15T11:00:00Z" }],
+  });
+  const thread = await worker.fetch(new Request(`https://relay.test/v1/report?code=${code}`), env);
+  const body = await thread.json();
+  assert.equal(body.status, "working");
+  assert.equal(body.publicNumber, 123);
+  assert.deepEqual(body.messages.map((m) => m.mine), [false, true]);
+  assert.equal(body.messages[1].text, "17.1.3", "the marker never reaches the reader");
+
+  const wrong = await worker.fetch(new Request("https://relay.test/v1/report?code=AAAA-BBBB-CCCC-DDDD"), env);
+  assert.equal(wrong.status, 410, "a wrong code answers exactly like a withdrawn one");
+});
+
+test("the status is read from the issue, never invented", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  const { code } = await (await worker.fetch(
+    post("/v1/report", { text: "Something", key: KEY }), env)).json();
+  const ask = async () => (await (await worker.fetch(
+    new Request(`https://relay.test/v1/report?code=${code}`), env)).json());
+
+  captureGitHub({ issue: { labels: [{ name: "bug" }, { name: "from-app" }] } });
+  assert.equal((await ask()).status, "arrived", "nobody has touched it yet");
+
+  captureGitHub({ issue: { labels: [{ name: "bug" }, { name: "needs-you" }] } });
+  assert.equal((await ask()).status, "read");
+
+  captureGitHub({ issue: { state: "closed", labels: [{ name: "fixed-in:13.1.0" }] } });
+  const fixed = await ask();
+  assert.equal(fixed.status, "fixed");
+  assert.equal(fixed.fixedIn, "13.1.0");
+
+  captureGitHub({ issue: { state: "closed", state_reason: "not_planned", labels: [] } });
+  assert.equal((await ask()).status, "notPlanned");
+});
+
+test("a reply is marked as the reporter's", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  const { code } = await (await worker.fetch(
+    post("/v1/report", { text: "Something", key: KEY }), env)).json();
+  const seen = captureGitHub();
+  const response = await worker.fetch(post("/v1/report/reply", { code, text: "Tried it, same thing", key: KEY }), env);
+  assert.equal(response.status, 200);
+  assert.match(JSON.parse(seen[0].init.body).body, /^<!--app-->\n/);
+});
+
+test("a log rides the same two steps, on its own counter", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  const { code } = await (await worker.fetch(
+    post("/v1/report", { text: "Something", key: KEY }), env)).json();
+
+  captureGitHub();
+  const { url } = await (await worker.fetch(
+    post("/v1/report-log-url", { code, bytes: 2000 }), env)).json();
+  const put = await worker.fetch(new Request(url, { method: "PUT", body: "x".repeat(2000) }), env);
+  assert.equal(put.status, 200);
+  assert.match(env.RAW.puts[0].key, new RegExp(`^reports/${code}/[0-9a-f]{32}\\.zip$`));
+  assert.equal(env.DB.logBudget.bytes, 2000);
+  assert.equal(env.DB.budget.bytes, 0, "the donation allowance is untouched by a bug report");
+});
+
+test("withdrawing takes the log and the thread with it", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  const { code } = await (await worker.fetch(
+    post("/v1/report", { text: "Something", key: KEY }), env)).json();
+  captureGitHub();
+  const { url } = await (await worker.fetch(
+    post("/v1/report-log-url", { code, bytes: 50 }), env)).json();
+  await worker.fetch(new Request(url, { method: "PUT", body: "x".repeat(50) }), env);
+  assert.equal(env.RAW.puts.length, 1);
+
+  captureGitHub();
+  const gone = await worker.fetch(post("/v1/report/withdraw", { code }), env);
+  assert.equal(gone.status, 200);
+  assert.equal(env.RAW.puts.length, 0, "the log is deleted, not just unlinked");
+  assert.equal(env.DB.reports.size, 0);
+
+  const after = await worker.fetch(new Request(`https://relay.test/v1/report?code=${code}`), env);
+  assert.equal(after.status, 410, "the code stops working");
 });
 
 test("anything else is gone, so an app that meets a retired service stops asking", async () => {

@@ -34,3 +34,29 @@ CREATE TABLE IF NOT EXISTS budget (
   id    INTEGER PRIMARY KEY CHECK (id = 1),
   bytes INTEGER NOT NULL
 );
+
+-- A reported problem that the reporter can follow. The code is the whole credential: it is what the
+-- app stores, what the reporter types back after a new install, and what withdraws the report. It is
+-- therefore long enough not to be guessed, and it is the ONLY thing tying a device to a report. The
+-- device key never appears here, so this table cannot say which reports came from the same person.
+CREATE TABLE IF NOT EXISTS reports (
+  code   TEXT PRIMARY KEY,
+  number INTEGER NOT NULL,
+  lang   TEXT NOT NULL,
+  at     INTEGER NOT NULL
+);
+
+-- An announced log upload, between the announcement and the bytes. Dies with the upload, or ages out.
+CREATE TABLE IF NOT EXISTS report_uploads (
+  token TEXT PRIMARY KEY,
+  code  TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  at    INTEGER NOT NULL
+);
+
+-- Bytes ever written to the report logs, the same hard stop as `budget` but counted apart, so a busy
+-- week of bug reports cannot eat the allowance the donations live on, nor the other way round.
+CREATE TABLE IF NOT EXISTS log_budget (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  bytes INTEGER NOT NULL
+);

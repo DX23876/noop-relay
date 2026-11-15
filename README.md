@@ -15,11 +15,23 @@ It does three things and nothing else:
 | `POST /v1/suggestion` | Free text up to 500 characters. Opens an issue in the PRIVATE suggestions repository. Never public until the owner releases it. |
 | `GET /v1/counts` | The current vote counts, so the app can show a number after someone voted. |
 | `POST /v1/raw-upload-url` | Announces a donated raw-motion recording and answers with a single-use address that expires in ten minutes. |
+| `POST /v1/report` | A reported problem. Goes to the PRIVATE repository with `bug` and `from-app`, never past the moderation filter, never published by itself. Answers with a code when the reporter wants a thread, and with nothing at all when they do not. |
+| `GET /v1/report?code=` | That one thread: the owner's questions, the reporter's answers, and where the matter stands. A wrong code answers like a withdrawn one. |
+| `POST /v1/report/reply` | The reporter answering. Marked, so the thread can tell the two voices apart. |
+| `POST /v1/report/withdraw` | Takes it back: the log is deleted, the thread closed, the code stops working. |
+| `POST /v1/report-log-url` + `PUT /v1/report-log/<token>` | The redacted log bundle, by the same two steps as a donation, with its own ceiling of 4 MiB and its own counter. |
 | `PUT /v1/raw/<token>` | The recording itself, measured against what was announced and against the budget below, then written to the private R2 bucket. An index issue records sport, size and the withdrawal code. |
 
 Not here, deliberately: no health data, no analytics, no logging of bodies or addresses, no account, no
 cookie, no third-party script. The device key is a random 128-bit value the app makes on first use; it
-identifies nothing and is used for nothing but refusing a second vote on the same item.
+identifies nothing and is used for nothing but refusing a second vote on the same item and slowing a
+flood of writes.
+
+A reported problem is the one thing here that can be followed, and it is followed by its CODE, not by
+the device: the code is random, handed to the app once, and is the whole credential for reading that
+thread, answering in it and withdrawing it. The device key is never stored beside it, so this service
+cannot say which reports came from the same person. What it does hold, which the rest of this does
+not, is other people's text: a report, its thread, and a redacted log until it is deleted.
 
 ## What keeps it free
 
@@ -32,7 +44,9 @@ repository are:
 - **The size is measured, not believed.** The upload is read with a bound and refused past it, so a
   chunked body that declares no length cannot turn into an object of any size it likes.
 - **`RAW_BUDGET_BYTES` caps the bytes ever written**, 8 GiB by default (8.59 GB of the free 10 GB,
-  about 19,900 full recordings), counted in D1. Reaching it stops
+  about 19,900 full recordings), counted in D1. **`LOG_BUDGET_BYTES`** does the same for report logs,
+  2 GiB by default and counted apart, so a bad week of bug reports cannot eat the donations'
+  allowance, nor the other way round. Reaching it stops
   donations until the number is raised; it is not a monthly figure, because objects live 24 months and a
   figure that resets every month would bound nothing. A counter that cannot be read refuses the upload.
 
