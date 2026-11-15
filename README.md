@@ -15,11 +15,27 @@ It does three things and nothing else:
 | `POST /v1/suggestion` | Free text up to 500 characters. Opens an issue in the PRIVATE suggestions repository. Never public until the owner releases it. |
 | `GET /v1/counts` | The current vote counts, so the app can show a number after someone voted. |
 | `POST /v1/raw-upload-url` | Announces a donated raw-motion recording and answers with a single-use address that expires in ten minutes. |
-| `PUT /v1/raw/<token>` | The recording itself, streamed straight into the private R2 bucket. An index issue records sport, size and the withdrawal code. |
+| `PUT /v1/raw/<token>` | The recording itself, measured against what was announced and against the budget below, then written to the private R2 bucket. An index issue records sport, size and the withdrawal code. |
 
 Not here, deliberately: no health data, no analytics, no logging of bodies or addresses, no account, no
 cookie, no third-party script. The device key is a random 128-bit value the app makes on first use; it
 identifies nothing and is used for nothing but refusing a second vote on the same item.
+
+## What keeps it free
+
+R2 gives away 10 GB a month. Cloudflare's spending limit covers Workers and Durable Objects, not R2 or
+D1, and a budget alert only sends mail, so neither can be the answer here. Three things in this
+repository are:
+
+- **One donation is at most 1 MiB.** A full one is 432,000 bytes: three windows of two minutes, six axes
+  of i16 at 100 Hz.
+- **The size is measured, not believed.** The upload is read with a bound and refused past it, so a
+  chunked body that declares no length cannot turn into an object of any size it likes.
+- **`RAW_BUDGET_BYTES` caps the bytes ever written**, 4 GiB by default, counted in D1. Reaching it stops
+  donations until the number is raised; it is not a monthly figure, because objects live 24 months and a
+  figure that resets every month would bound nothing. A counter that cannot be read refuses the upload.
+
+A spending alert in the dashboard is still worth having, as the thing that tells you the above failed.
 
 ## Tests
 

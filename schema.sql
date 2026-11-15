@@ -26,3 +26,11 @@ CREATE TABLE IF NOT EXISTS donations (
   meta  TEXT NOT NULL,
   at    INTEGER NOT NULL
 );
+
+-- Bytes ever written to the donation bucket. A cost cap, not a statistic: R2's free allowance is 10 GB,
+-- and Cloudflare's spending limit does not cover R2, so this counter is the only hard stop there is.
+-- One row, never more. Objects age out after 24 months, so stored bytes stay below this number.
+CREATE TABLE IF NOT EXISTS budget (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  bytes INTEGER NOT NULL
+);

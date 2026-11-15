@@ -17,8 +17,9 @@ function makeDB() {
   const votes = new Map();      // `${item}\u0000${key}` -> at
   const calls = new Map();      // `${key}\u0000${hour}` -> n
   const donations = new Map();  // token -> row
+  const budget = { bytes: 0 };  // bytes ever written, the cost cap's counter
   return {
-    votes, calls, donations,
+    votes, calls, donations, budget,
     prepare(sql) {
       let bound = [];
       const api = {
@@ -38,6 +39,8 @@ function makeDB() {
             donations.set(token, { token, code, sport, bytes, meta, at });
           } else if (sql.startsWith("DELETE FROM donations")) {
             donations.delete(bound[0]);
+          } else if (sql.startsWith("UPDATE budget")) {
+            budget.bytes = Math.max(budget.bytes - bound[0], 0);
           }
           return { success: true };
         },
@@ -51,6 +54,11 @@ function makeDB() {
             return { n };
           }
           if (sql.startsWith("SELECT * FROM donations")) return donations.get(bound[0]) ?? null;
+          if (sql.startsWith("SELECT bytes FROM budget")) return { bytes: budget.bytes };
+          if (sql.startsWith("INSERT INTO budget")) {
+            budget.bytes += bound[0];
+            return { bytes: budget.bytes };
+          }
           return null;
         },
         async all() {
@@ -198,11 +206,92 @@ test("a donation address expires", async () => {
   assert.equal(env.RAW.puts.length, 0, "nothing lands in the bucket after the window closed");
 });
 
+test("more bytes than it announced never reach the bucket, with or without a length header", async () => {
+  captureFetch();
+  const env = makeEnv();
+  const announce = () => worker.fetch(
+    post("/v1/raw-upload-url", { sport: "walking", bytes: 432000, code: "R-ABCD" }), env);
+
+  // One byte over what it announced.
+  let url = (await (await announce()).json()).url;
+  let put = await worker.fetch(new Request(url, { method: "PUT", body: "x".repeat(432001) }), env);
+  assert.equal(put.status, 413);
+
+  // The same, as a chunked stream that carries no content-length: the size is measured, not believed.
+  url = (await (await announce()).json()).url;
+  const big = new ReadableStream({
+    start(c) {
+      for (let i = 0; i < 44; i += 1) c.enqueue(new Uint8Array(10_000));
+      c.close();
+    },
+  });
+  put = await worker.fetch(new Request(url, { method: "PUT", body: big, duplex: "half" }), env);
+  assert.equal(put.status, 413);
+
+  // And an empty body is not a donation either.
+  url = (await (await announce()).json()).url;
+  put = await worker.fetch(new Request(url, { method: "PUT", body: "" }), env);
+  assert.equal(put.status, 413);
+
+  assert.equal(env.RAW.puts.length, 0, "nothing was stored");
+  assert.equal(env.DB.budget.bytes, 0, "and nothing was counted against the budget");
+});
+
+test("the budget is the cap: it counts what arrived and refuses what would exceed it", async () => {
+  captureFetch();
+  const env = makeEnv({ RAW_BUDGET_BYTES: "500000" });
+
+  const first = await (await worker.fetch(
+    post("/v1/raw-upload-url", { sport: "cycling", bytes: 432000, code: "R-4K8T" }), env)).json();
+  const put = await worker.fetch(
+    new Request(first.url, { method: "PUT", body: "x".repeat(432000) }), env);
+  assert.equal(put.status, 200);
+  assert.equal(env.DB.budget.bytes, 432000, "the bytes that arrived, not the bytes announced");
+
+  // 432,000 of 500,000 are gone, so the next one is refused at the announcement already.
+  const second = await worker.fetch(
+    post("/v1/raw-upload-url", { sport: "cycling", bytes: 432000, code: "R-5L9U" }), env);
+  assert.equal(second.status, 503);
+  assert.equal(env.DB.donations.size, 0, "a refused donation is not even announced");
+  assert.equal(env.RAW.puts.length, 1, "and nothing more reached the bucket");
+});
+
+test("a bucket that refuses the bytes gives the budget back", async () => {
+  captureFetch();
+  const env = makeEnv({ RAW: { puts: [], async put() { throw new Error("no space"); } } });
+  const { url } = await (await worker.fetch(
+    post("/v1/raw-upload-url", { sport: "running", bytes: 1000, code: "R-ZZZZ" }), env)).json();
+  const put = await worker.fetch(new Request(url, { method: "PUT", body: "x".repeat(1000) }), env);
+  assert.equal(put.status, 502);
+  assert.equal(env.DB.budget.bytes, 0, "nothing stored, nothing owed");
+});
+
+test("without a bucket the service says so instead of failing", async () => {
+  const env = makeEnv({ RAW: undefined });
+  const response = await worker.fetch(
+    post("/v1/raw-upload-url", { sport: "cycling", bytes: 1000, code: "R-4K8T" }), env);
+  assert.equal(response.status, 503);
+});
+
+test("a counter that cannot be read is not permission to write", async () => {
+  captureFetch();
+  const env = makeEnv();
+  const { url } = await (await worker.fetch(
+    post("/v1/raw-upload-url", { sport: "cycling", bytes: 1000, code: "R-4K8T" }), env)).json();
+  const broken = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => (sql.startsWith("INSERT INTO budget")
+    ? { bind: () => ({ async first() { throw new Error("D1 is down"); } }) }
+    : broken(sql));
+  const put = await worker.fetch(new Request(url, { method: "PUT", body: "x".repeat(1000) }), env);
+  assert.equal(put.status, 503);
+  assert.equal(env.RAW.puts.length, 0);
+});
+
 test("a nonsense announcement is refused", async () => {
   const env = makeEnv();
   for (const body of [{ sport: "Cycling", bytes: 10, code: "R-4K8T" },      // sport must be a key
                       { sport: "cycling", bytes: 0, code: "R-4K8T" },
-                      { sport: "cycling", bytes: 99 * 1024 * 1024, code: "R-4K8T" },
+                      { sport: "cycling", bytes: 2 * 1024 * 1024, code: "R-4K8T" },   // over 1 MiB
                       { sport: "cycling", bytes: 10, code: "nope" }]) {
     const response = await worker.fetch(post("/v1/raw-upload-url", body), env);
     assert.equal(response.status, 400, JSON.stringify(body));
