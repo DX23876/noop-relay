@@ -108,7 +108,14 @@ async function suggestion(request, env) {
     body: JSON.stringify({ title: firstLine, body: text, labels: ["suggestion", "from-app"] }),
   });
   // The reporter learns that it arrived, never why it did not: a failure here is the owner's to see.
-  if (!response.ok) return json({ ok: false }, 502);
+  // So it has to be visible SOMEWHERE, and a suggestion that silently never becomes an issue is the
+  // hardest kind of fault to find. The status alone, no body, no token, no text anyone wrote: enough
+  // to tell a refused token (401/403) from a repository that answers differently (404/422). With
+  // observability off this is stored nowhere; it reaches a live `wrangler tail` and otherwise nobody.
+  if (!response.ok) {
+    console.warn(`suggestion refused by GitHub: ${response.status}`);
+    return json({ ok: false }, 502);
+  }
   return json({ ok: true });
 }
 
