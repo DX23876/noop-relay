@@ -34,6 +34,10 @@ const CODE_PATTERN = /^[2-9A-HJ-NP-Z]{4}(-[2-9A-HJ-NP-Z]{4}){3}$/;
 // What marks a comment as the reporter's rather than the owner's. Both are posted by the same token,
 // so without this the thread could not say who spoke, and an answer would read as a question.
 const FROM_APP = "<!--app-->";
+// What this service writes itself: the note that a log arrived, the note that a report was withdrawn.
+// Without a mark of its own it reaches the reporter as the owner's voice, so the thread would show
+// "Log attached: reports/<code>/<token>.zip" as something a person said to them, bucket path included.
+const FROM_RELAY = "<!--relay-->";
 const LANG_PATTERN = /^[a-z]{2}(-[A-Za-z0-9]{2,8})?$/;
 const KEY_PATTERN = /^[0-9a-f]{32}$/;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,39}$/;
@@ -340,6 +344,7 @@ async function thread(request, env, code) {
     fixedIn: fixedInOf(data),
     publicNumber: publicNumberOf(data.body),
     messages: list
+      .filter((c) => !String(c.body || "").startsWith(FROM_RELAY))
       .map((c) => ({
         mine: String(c.body || "").startsWith(FROM_APP),
         text: String(c.body || "").replace(FROM_APP, "").trim().slice(0, MAX_REPORT),
@@ -409,7 +414,9 @@ async function withdraw(request, env) {
   }
   await github(env, `/issues/${row.number}/comments`, {
     method: "POST",
-    body: JSON.stringify({ body: "The reporter withdrew this. The log is deleted." }),
+    body: JSON.stringify({
+      body: `${FROM_RELAY}\nThe reporter withdrew this. The log is deleted.`,
+    }),
   }).catch(() => {});
   await env.DB.prepare("DELETE FROM reports WHERE code = ?").bind(row.code).run();
   await env.DB.prepare("DELETE FROM report_uploads WHERE code = ?").bind(row.code).run();
@@ -464,7 +471,9 @@ async function reportLogUpload(request, env, token) {
   if (report?.number) {
     await github(env, `/issues/${report.number}/comments`, {
       method: "POST",
-      body: JSON.stringify({ body: `Log attached: \`${key}\` (${payload.byteLength} bytes).` }),
+      body: JSON.stringify({
+        body: `${FROM_RELAY}\nLog attached: \`${key}\` (${payload.byteLength} bytes).`,
+      }),
     }).catch(() => {});
   }
   return json({ ok: true });

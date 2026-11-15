@@ -404,6 +404,25 @@ test("the thread shows both voices apart, and a wrong code says nothing", async 
   assert.equal(wrong.status, 410, "a wrong code answers exactly like a withdrawn one");
 });
 
+test("the service's own notes never reach the thread as the owner's voice", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  const { code } = await (await worker.fetch(
+    post("/v1/report", { text: "Live heart rate stops", key: KEY }), env)).json();
+
+  captureGitHub({
+    comments: [{ body: "<!--relay-->\nLog attached: `reports/x/y.zip` (2108421 bytes).",
+                 created_at: "2026-11-15T22:53:00Z" },
+               { body: "Which firmware is on the strap?", created_at: "2026-11-15T23:00:00Z" }],
+  });
+  const body = await (await worker.fetch(
+    new Request(`https://relay.test/v1/report?code=${code}`), env)).json();
+  assert.equal(body.messages.length, 1, "the note about the log is not a message");
+  assert.equal(body.messages[0].text, "Which firmware is on the strap?");
+  assert.ok(!JSON.stringify(body).includes("reports/x/y.zip"),
+            "and the bucket path never reaches the reporter");
+});
+
 test("the status is read from the issue, never invented", async () => {
   const env = makeEnv();
   captureGitHub();
