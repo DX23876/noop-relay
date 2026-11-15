@@ -389,7 +389,9 @@ test("the thread shows both voices apart, and a wrong code says nothing", async 
     post("/v1/report", { text: "Live heart rate stops", key: KEY }), env)).json();
 
   captureGitHub({
-    issue: { state: "open", labels: [{ name: "bug" }, { name: "in-progress" }], body: "Public: #123" },
+    issue: { state: "open", labels: [{ name: "bug" }, { name: "in-progress" }],
+             body: "Live heart rate stops\n\nCode: ABCD-EFGH-JKLM-NPQR\nLanguage: de\nPublic: #123",
+             created_at: "2026-11-15T09:00:00Z" },
     comments: [{ body: "Which firmware is on the strap?", created_at: "2026-11-15T10:00:00Z" },
                { body: "<!--app-->\n17.1.3", created_at: "2026-11-15T11:00:00Z" }],
   });
@@ -397,11 +399,32 @@ test("the thread shows both voices apart, and a wrong code says nothing", async 
   const body = await thread.json();
   assert.equal(body.status, "working");
   assert.equal(body.publicNumber, 123);
-  assert.deepEqual(body.messages.map((m) => m.mine), [false, true]);
-  assert.equal(body.messages[1].text, "17.1.3", "the marker never reaches the reader");
+  assert.deepEqual(body.messages.map((m) => m.mine), [true, false, true],
+                   "what they wrote comes first, and it is theirs");
+  assert.equal(body.messages[0].text, "Live heart rate stops",
+               "without the lines this service appended");
+  assert.equal(body.messages[2].text, "17.1.3", "the marker never reaches the reader");
 
   const wrong = await worker.fetch(new Request("https://relay.test/v1/report?code=AAAA-BBBB-CCCC-DDDD"), env);
   assert.equal(wrong.status, 410, "a wrong code answers exactly like a withdrawn one");
+});
+
+test("a flood cannot fill the repository, whatever keys it invents", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  // Sixty go in, each with a key of its own, which is what defeats the per-key bremse.
+  for (let i = 0; i < 60; i += 1) {
+    const key = i.toString(16).padStart(32, "0");
+    const answer = await worker.fetch(post("/v1/report", { text: `report ${i}`, key }), env);
+    assert.equal(answer.status, 200, `report ${i} should still be taken`);
+  }
+  const over = await worker.fetch(
+    post("/v1/report", { text: "one too many", key: "f".repeat(32) }), env);
+  assert.equal(over.status, 429, "the sixty-first is refused across all callers");
+
+  const wish = await worker.fetch(
+    post("/v1/suggestion", { text: "and so is a wish", key: "e".repeat(32) }), env);
+  assert.equal(wish.status, 429, "the same ceiling covers everything that opens an issue");
 });
 
 test("the service's own notes never reach the thread as the owner's voice", async () => {

@@ -16,7 +16,7 @@ It does three things and nothing else:
 | `GET /v1/counts` | The current vote counts, so the app can show a number after someone voted. |
 | `POST /v1/raw-upload-url` | Announces a donated raw-motion recording and answers with a single-use address that expires in ten minutes. |
 | `POST /v1/report` | A reported problem. Goes to the PRIVATE repository with `bug` and `from-app`, never past the moderation filter, never published by itself. Answers with a code when the reporter wants a thread, and with nothing at all when they do not. |
-| `GET /v1/report?code=` | That one thread: the owner's questions, the reporter's answers, and where the matter stands. A wrong code answers like a withdrawn one. |
+| `GET /v1/report?code=` | That one thread, their own words first: the owner's questions, the reporter's answers, and where the matter stands. A wrong code answers like a withdrawn one. |
 | `POST /v1/report/reply` | The reporter answering. Marked, so the thread can tell the two voices apart. |
 | `POST /v1/report/withdraw` | Takes it back: the log is deleted, the thread closed, the code stops working. |
 | `POST /v1/report-log-url` + `PUT /v1/report-log/<token>` | The redacted log bundle, by the same two steps as a donation, with its own ceiling of 4 MiB and its own counter. |
@@ -43,6 +43,9 @@ repository are:
   of i16 at 100 Hz.
 - **The size is measured, not believed.** The upload is read with a bound and refused past it, so a
   chunked body that declares no length cannot turn into an object of any size it likes.
+- **Sixty issues an hour, across everyone.** The per-key rate limit cannot hold a flood back, because
+  the key is a value the caller makes up. This one is the number that bounds what a stranger can put
+  in the owner's repository, and it covers reports and wishes alike.
 - **`RAW_BUDGET_BYTES` caps the bytes ever written**, 8 GiB by default (8.59 GB of the free 10 GB,
   about 19,900 full recordings), counted in D1. **`LOG_BUDGET_BYTES`** does the same for report logs,
   2 GiB by default and counted apart, so a bad week of bug reports cannot eat the donations'

@@ -21,6 +21,12 @@ const DONATION_TTL_MS = 10 * 60 * 1000;
 const DONATION_SPORTS = /^[a-z0-9_]{2,40}$/;
 const MAX_ID = 40;
 const CALLS_PER_HOUR = 30;
+// Everything that opens an issue, counted across all callers. The per-key bremse cannot hold a flood
+// back: the key is a value the caller makes up, so a script simply sends a new one each time. This is
+// the number that bounds what a stranger can put in the owner's repository in an hour.
+const ISSUES_PER_HOUR = 60;
+// The reserved counter row for that. Never collides with a device key, which is 32 hex characters.
+const GLOBAL_KEY = "global";
 // A report needs more room than a wish: it describes what happened, on what, and what was expected.
 const MAX_REPORT = 2000;
 const MAX_REPLY = 1000;
@@ -55,7 +61,7 @@ const json = (body, status = 200) =>
   });
 
 /** Bounded, per device key and per hour. Keeps one broken client from filling the table. */
-async function withinRate(db, key) {
+async function withinRate(db, key, limit = CALLS_PER_HOUR) {
   const hour = Math.floor(Date.now() / 3600000);
   await db
     .prepare("INSERT INTO calls (key, hour, n) VALUES (?, ?, 1) " +
@@ -63,7 +69,16 @@ async function withinRate(db, key) {
     .bind(key, hour)
     .run();
   const row = await db.prepare("SELECT n FROM calls WHERE key = ? AND hour = ?").bind(key, hour).first();
-  return (row?.n ?? 0) <= CALLS_PER_HOUR;
+  return (row?.n ?? 0) <= limit;
+}
+
+/** The same counter as `withinRate`, on the reserved row, for everything that writes to GitHub. */
+async function withinIssueRate(db) {
+  try {
+    return await withinRate(db, GLOBAL_KEY, ISSUES_PER_HOUR);
+  } catch {
+    return false;
+  }
 }
 
 async function countFor(db, item) {
@@ -112,6 +127,7 @@ async function suggestion(request, env) {
     return json({ error: "bad request" }, 400);
   }
   if (!(await withinRate(env.DB, key))) return json({ error: "slow down" }, 429);
+  if (!(await withinIssueRate(env.DB))) return json({ error: "slow down" }, 429);
 
   const firstLine = text.split("\n")[0].slice(0, 80).trim() || "Suggestion";
   const response = await fetch(`https://api.github.com/repos/${env.SUGGESTION_REPO}/issues`, {
@@ -288,6 +304,7 @@ async function report(request, env) {
     return json({ error: "bad request" }, 400);
   }
   if (!(await withinRate(env.DB, key))) return json({ error: "slow down" }, 429);
+  if (!(await withinIssueRate(env.DB))) return json({ error: "slow down" }, 429);
 
   const code = wantsThread ? newReportCode() : null;
   const firstLine = text.split("\n")[0].slice(0, 80).trim() || "Reported from the app";
@@ -339,19 +356,29 @@ async function thread(request, env, code) {
   const comments = await github(env, `/issues/${row.number}/comments?per_page=100`);
   const list = comments.ok ? await comments.json() : [];
 
+  // What they wrote, first, and marked as theirs. It lives in the issue body rather than in a comment,
+  // so without this a thread picked up on a new device shows the answers to a question that is not there.
+  const opening = reportedText(data.body);
   return json({
     status: statusOf(data),
     fixedIn: fixedInOf(data),
     publicNumber: publicNumberOf(data.body),
-    messages: list
+    messages: (opening ? [{ mine: true, text: opening, at: data.created_at }] : []).concat(list
       .filter((c) => !String(c.body || "").startsWith(FROM_RELAY))
       .map((c) => ({
         mine: String(c.body || "").startsWith(FROM_APP),
         text: String(c.body || "").replace(FROM_APP, "").trim().slice(0, MAX_REPORT),
         at: c.created_at,
       }))
-      .filter((m) => m.text.length > 0),
+      .filter((m) => m.text.length > 0)),
   });
+}
+
+/** The report as it was written, with the lines this service appended taken back off. */
+function reportedText(body) {
+  const text = String(body || "");
+  const cut = text.search(/\nCode: |\nSent without a thread|\nPublic: #/);
+  return (cut >= 0 ? text.slice(0, cut) : text).trim().slice(0, MAX_REPORT);
 }
 
 /** Reported, read, being worked on, fixed: from the labels, never invented. */
