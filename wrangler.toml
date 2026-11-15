@@ -1,0 +1,22 @@
+name = "noop-relay"
+main = "src/worker.js"
+compatibility_date = "2026-01-01"
+
+# No logpush, no analytics engine, no tail consumer: nothing records who called.
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "noop-relay"
+database_id = "replace-me"
+
+[vars]
+# The PRIVATE repository suggestions become issues in. Never the public app repository.
+SUGGESTION_REPO = "DX23876/noop-suggestions"
+
+# Donated raw-motion recordings. Private bucket, and a lifecycle rule deletes objects after 24 months,
+# which is the figure the app's explainer page states.
+[[r2_buckets]]
+binding = "RAW"
+bucket_name = "noop-raw-donations"
