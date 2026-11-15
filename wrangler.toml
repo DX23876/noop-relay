@@ -2,6 +2,12 @@ name = "noop-relay"
 main = "src/worker.js"
 compatibility_date = "2026-01-01"
 
+# One address, not one per version. A preview URL carries the same bindings as production, so a version
+# deployed with a fault would keep serving it against the real database and the real bucket long after
+# production was fixed. The app only ever knows the address in the app repository's docs/app-feed.json.
+# It belongs here rather than in the dashboard: a dashboard-only change is reset by the next deploy.
+preview_urls = false
+
 # No logpush, no analytics engine, no tail consumer: nothing records who called.
 [observability]
 enabled = false
