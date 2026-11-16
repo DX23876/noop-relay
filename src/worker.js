@@ -325,10 +325,26 @@ async function report(request, env) {
 
   const number = Number((await response.json().catch(() => ({})))?.number);
   if (!Number.isFinite(number)) return json({ ok: false }, 502);
-  await env.DB
-    .prepare("INSERT INTO reports (code, number, lang, at) VALUES (?, ?, ?, ?)")
-    .bind(code, number, lang, Date.now())
-    .run();
+  try {
+    await env.DB
+      .prepare("INSERT INTO reports (code, number, lang, at) VALUES (?, ?, ?, ?)")
+      .bind(code, number, lang, Date.now())
+      .run();
+  } catch (error) {
+    // The issue exists and the row does not, so the code in it is a key to nothing. Saying ok with
+    // that code would hand somebody a code that answers "gone" for ever, and failing outright would
+    // tell them nothing arrived while it did, which is how one problem gets reported twice. So: the
+    // report arrived, there is no thread, and the issue says so to the owner.
+    console.warn(`report ${number} has no thread row: ${error}`);
+    await github(env, `/issues/${number}/comments`, {
+      method: "POST",
+      body: JSON.stringify({
+        body: `${FROM_RELAY}\nThe thread for this report could not be stored, so its code never `
+          + `worked and the reporter cannot be reached. Nothing is wrong with the report itself.`,
+      }),
+    }).catch(() => {});
+    return json({ ok: true });
+  }
   return json({ ok: true, code });
 }
 
@@ -358,7 +374,7 @@ async function thread(request, env, code) {
 
   // What they wrote, first, and marked as theirs. It lives in the issue body rather than in a comment,
   // so without this a thread picked up on a new device shows the answers to a question that is not there.
-  const opening = reportedText(data.body);
+  const opening = reportedText(data.body, row);
   return json({
     status: statusOf(data),
     fixedIn: fixedInOf(data),
@@ -374,10 +390,21 @@ async function thread(request, env, code) {
   });
 }
 
-/** The report as it was written, with the lines this service appended taken back off. */
-function reportedText(body) {
+/**
+ * The report as it was written, with the lines this service appended taken back off.
+ *
+ * Cut at the exact block appended for THIS report when the row is known, rather than at the first
+ * line that merely looks like it: a reporter writing "Code: 1234" about something else in the app had
+ * their own report truncated there, and the thread then showed them half of what they sent.
+ */
+function reportedText(body, row) {
   const text = String(body || "");
-  const cut = text.search(/\nCode: |\nSent without a thread|\nPublic: #/);
+  let cut = row?.code ? text.lastIndexOf(`\nCode: ${row.code}`) : -1;
+  if (cut < 0) {
+    const hit = /\nCode: [23456789ABCDEFGHJKLMNPQRSTUVWXYZ-]{19}\n|\nSent without a thread|\nPublic: #/
+      .exec(text);
+    cut = hit ? hit.index : -1;
+  }
   return (cut >= 0 ? text.slice(0, cut) : text).trim().slice(0, MAX_REPORT);
 }
 

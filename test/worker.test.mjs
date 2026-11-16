@@ -21,8 +21,8 @@ function makeDB() {
   const logBudget = { bytes: 0 };  // report-log bytes, counted apart on purpose
   const reports = new Map();       // code -> row
   const uploads = new Map();       // token -> row
-  return {
-    votes, calls, donations, budget, logBudget, reports, uploads,
+  const db = {
+    votes, calls, donations, budget, logBudget, reports, uploads, failInsert: false,
     prepare(sql) {
       let bound = [];
       const api = {
@@ -47,6 +47,9 @@ function makeDB() {
           } else if (sql.startsWith("UPDATE log_budget")) {
             logBudget.bytes = Math.max(logBudget.bytes - bound[0], 0);
           } else if (sql.startsWith("INSERT INTO reports")) {
+            // `failInsert` stands in for a D1 that is there for the issue call and gone a moment
+            // later: the one order in which a code can be handed out with nothing behind it.
+            if (db.failInsert) throw new Error("D1_ERROR: no such table");
             const [code, number, lang, at] = bound;
             reports.set(code, { code, number, lang, at });
           } else if (sql.startsWith("DELETE FROM reports")) {
@@ -97,6 +100,7 @@ function makeDB() {
       return api;
     },
   };
+  return db;
 }
 
 function makeEnv(overrides = {}) {
@@ -521,4 +525,37 @@ test("anything else is gone, so an app that meets a retired service stops asking
   const env = makeEnv();
   const response = await worker.fetch(new Request("https://relay.test/v1/whatever"), env);
   assert.equal(response.status, 410);
+});
+
+test("a reporter who quotes a code line still sees their whole report", async () => {
+  const env = makeEnv();
+  captureGitHub();
+  const written = "The alarm screen shows\nCode: 1234\nwhere it should show a time";
+  const { code } = await (await worker.fetch(
+    post("/v1/report", { text: written, key: KEY }), env)).json();
+
+  // The body as the service wrote it: their words, then the block it appends.
+  captureGitHub({
+    issue: { state: "open", labels: [], created_at: "2026-11-16T01:00:00Z",
+             body: `${written}\n\nCode: ${code}\nLanguage: en` },
+  });
+  const body = await (await worker.fetch(
+    new Request(`https://relay.test/v1/report?code=${code}`), env)).json();
+  assert.equal(body.messages[0].text, written,
+               "cutting at the first code-looking line took half their report away");
+});
+
+test("a report whose thread cannot be stored hands out no code and says so in the issue", async () => {
+  const env = makeEnv();
+  const seen = captureGitHub();
+  env.DB.failInsert = true;
+  const response = await worker.fetch(
+    post("/v1/report", { text: "Something is broken", key: KEY }), env);
+  assert.deepEqual(await response.json(), { ok: true },
+                   "the issue exists, so saying it failed would get the problem reported twice");
+  assert.equal(env.DB.reports.size, 0);
+  const note = seen.find((call) => /\/comments$/.test(call.url));
+  assert.ok(note, "the owner is told the reporter cannot be reached");
+  assert.match(JSON.parse(note.init.body).body, /^<!--relay-->/,
+               "and the note is marked, so it is not read as the owner speaking");
 });
