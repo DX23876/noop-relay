@@ -15,7 +15,7 @@ It does three things and nothing else:
 | `POST /v1/suggestion` | Free text up to 500 characters. Opens an issue in the PRIVATE suggestions repository. Never public until the owner releases it. |
 | `GET /v1/counts` | The current vote counts, so the app can show a number after someone voted. |
 | `POST /v1/raw-upload-url` | Announces a donated raw-motion recording and answers with a single-use address that expires in ten minutes. |
-| `POST /v1/report` | A reported problem. Goes to the PRIVATE repository with `bug` and `from-app`, never past the moderation filter, never published by itself. Answers with a code when the reporter wants a thread, and with nothing at all when they do not. |
+| `POST /v1/report` | A reported problem. Goes to the PRIVATE repository with `bug` and `from-app`, never past the moderation filter, never published by itself. Answers with a code when the reporter wants a thread, and with nothing at all when they do not, or when the thread row could not be stored: a code that answers "gone" for ever would be worse than none, and the issue says so to the owner. |
 | `GET /v1/report?code=` | That one thread, their own words first: the owner's questions, the reporter's answers, and where the matter stands. A wrong code answers like a withdrawn one. |
 | `POST /v1/report/reply` | The reporter answering. Marked, so the thread can tell the two voices apart. |
 | `POST /v1/report/withdraw` | Takes it back: the log is deleted, the thread closed, the code stops working. |
